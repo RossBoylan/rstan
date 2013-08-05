@@ -69,7 +69,8 @@ else
 	@echo "git_head <- function() \"`git rev-parse HEAD`\"" > rstan/R/git_rstan_head.R
 	@echo "git_stan_head <- function() \"`cd ..; git submodule status`\"" > rstan/R/git_stan_head.R
 endif
-	$(R) CMD build rstan --md5  # --no-vignettes --no-manual
+	# --resave-data="best" to work around https://bugs.r-project.org/bugzilla3/show_bug.cgi?id=14947
+	$(R) CMD build rstan --md5 --resave-data="best" # --no-vignettes --no-manual
 
 check: $(STANPKG) 
 	$(R) CMD check --as-cran $(STANPKG) 
