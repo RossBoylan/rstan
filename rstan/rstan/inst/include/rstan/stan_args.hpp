@@ -126,7 +126,11 @@ namespace rstan {
         int refresh; // default to 100
         optim_algo_t algorithm; // Newton, Nesterov, BFGS
         bool save_iterations; // default to false
-        double stepsize; // default to 1
+        double stepsize; // default to 1, for Nesterov
+        double init_alpha; // default to 0.001, for BFGS
+        double tol_obj; // default to 1e-8, for BFGS
+        double tol_grad; // default to 1e-8, for BFGS
+        double tol_param; // default to 1e-8, for BFGS
       } optim; 
     } ctrl; 
 
@@ -176,13 +180,13 @@ namespace rstan {
                 << ctrl.sampling.stepsize_jitter << "; require 0<=stepsize_jitter<=1).";
             throw std::invalid_argument(msg.str());
           } 
-          if (ctrl.sampling.max_treedepth < 0) {
+          if (ctrl.sampling.algorithm == NUTS && ctrl.sampling.max_treedepth < 0) {
             std::stringstream msg;
             msg << "Invalid adaptation parameter (found max_treedepth="
                 << ctrl.sampling.max_treedepth << "; require max_treedepth>0).";
             throw std::invalid_argument(msg.str());
           } 
-          if (ctrl.sampling.int_time < 0) {
+          if (ctrl.sampling.algorithm == HMC && ctrl.sampling.int_time < 0) {
             std::stringstream msg;
             msg << "Invalid adaptation parameter (found int_time="
                 << ctrl.sampling.int_time << "; require int_time>0).";
@@ -190,10 +194,16 @@ namespace rstan {
           } 
           break;
         case OPTIM:
-          if (ctrl.optim.stepsize < 0) {  
+          if (ctrl.optim.stepsize < 0) {
             std::stringstream msg; 
             msg << "Invalid adaptation parameter (found stepsize="
                 << ctrl.optim.stepsize << "; require stepsize > 0).";
+            throw std::invalid_argument(msg.str());
+          } 
+          if (ctrl.optim.init_alpha < 0) {  
+            std::stringstream msg; 
+            msg << "Invalid adaptation parameter (found init_alpha="
+                << ctrl.optim.init_alpha << "; require init_alpha > 0).";
             throw std::invalid_argument(msg.str());
           } 
           break;
@@ -268,15 +278,16 @@ namespace rstan {
             get_rlist_element(ctrl_lst, "adapt_t0", ctrl.sampling.adapt_t0, 10.0);
             get_rlist_element(ctrl_lst, "stepsize", ctrl.sampling.stepsize, 1.0);
             get_rlist_element(ctrl_lst, "stepsize_jitter", ctrl.sampling.stepsize_jitter, 0.0);
+
+            if (get_rlist_element(ctrl_lst, "metric", t_str)) { 
+              if ("unit_e" == t_str) ctrl.sampling.metric = UNIT_E;
+              else if ("diag_e" == t_str) ctrl.sampling.metric = DIAG_E;
+              else if ("dense_e" == t_str) ctrl.sampling.metric = DENSE_E;
+            } else ctrl.sampling.metric = DIAG_E;
     
             switch (ctrl.sampling.algorithm) { 
               case NUTS: 
                 get_rlist_element(ctrl_lst, "max_treedepth", ctrl.sampling.max_treedepth, 10);
-                if (get_rlist_element(ctrl_lst, "metric", t_str)) { 
-                  if ("unit_e" == t_str) ctrl.sampling.metric = UNIT_E;
-                  else if ("diag_e" == t_str) ctrl.sampling.metric = DIAG_E;
-                  else if ("dense_e" == t_str) ctrl.sampling.metric = DENSE_E;
-                } else ctrl.sampling.metric = DIAG_E;
                 break;
               case HMC: 
                 get_rlist_element(ctrl_lst, "int_time", ctrl.sampling.int_time, 
@@ -320,6 +331,10 @@ namespace rstan {
           } 
   
           get_rlist_element(in, "stepsize", ctrl.optim.stepsize, 1.0);
+          get_rlist_element(in, "init_alpha", ctrl.optim.init_alpha, 0.001);
+          get_rlist_element(in, "tol_obj", ctrl.optim.tol_obj, 1e-8);
+          get_rlist_element(in, "tol_grad", ctrl.optim.tol_grad, 1e-8);
+          get_rlist_element(in, "tol_param", ctrl.optim.tol_param, 1e-8);
           get_rlist_element(in, "save_iterations", ctrl.optim.save_iterations, true);
           break;
 
@@ -361,6 +376,7 @@ namespace rstan {
       if (diagnostic_file_flag) 
         lst["diagnostic_file_flag"] = diagnostic_file;
 
+      std::string sampler_t;
       switch (method) { 
         case SAMPLING: 
           lst["method"] = "sampling";
@@ -374,34 +390,39 @@ namespace rstan {
           ctrl_list["adapt_delta"] = ctrl.sampling.adapt_delta;
           ctrl_list["adapt_kappa"] = ctrl.sampling.adapt_kappa;
           ctrl_list["adapt_t0"] = ctrl.sampling.adapt_t0;
-          switch (ctrl.sampling.algorithm) {  
-            case NUTS:
-              switch (ctrl.sampling.metric) { 
-                case UNIT_E: 
-                  ctrl_list["metric"] = Rcpp::wrap("unit_e"); 
-                  lst["sampler_t"] = "NUTS(unit_e)";
-                  break;
-                case DIAG_E: 
-                  ctrl_list["metric"] = Rcpp::wrap("diag_e");
-                  lst["sampler_t"] = "NUTS(diag_e)";
-                  break;
-                case DENSE_E: 
-                  ctrl_list["metric"] = Rcpp::wrap("dense_e");
-                  lst["sampler_t"] = "NUTS(dense_e)";
-                  break;
-              }
-              ctrl_list["stepsize"] = ctrl.sampling.stepsize;
-              ctrl_list["stepsize_jitter"] = ctrl.sampling.stepsize_jitter;
+          ctrl_list["stepsize"] = ctrl.sampling.stepsize;
+          ctrl_list["stepsize_jitter"] = ctrl.sampling.stepsize_jitter;
+          switch (ctrl.sampling.algorithm) { 
+            case NUTS: 
               ctrl_list["max_treedepth"] = ctrl.sampling.max_treedepth;
+              sampler_t.append("NUTS");
               break;
             case HMC: 
               ctrl_list["int_time"] = ctrl.sampling.int_time;
-              lst["sampler_t"] = "HMC";
+              sampler_t.append("HMC");
               break;
             case Metropolis: 
-              lst["sampler_t"] = "Metropolis";
+              sampler_t.append("Metropolis");
               break;
           } 
+          if (ctrl.sampling.algorithm != Metropolis) { 
+            switch (ctrl.sampling.metric) { 
+              case UNIT_E: 
+                ctrl_list["metric"] = Rcpp::wrap("unit_e"); 
+                sampler_t.append("(unit_e)");
+                break;
+              case DIAG_E: 
+                ctrl_list["metric"] = Rcpp::wrap("diag_e");
+                sampler_t.append("(diag_e)");
+                break;
+              case DENSE_E: 
+                ctrl_list["metric"] = Rcpp::wrap("dense_e");
+                sampler_t.append("(dense_e)");
+                break;
+            }
+          }
+
+          lst["sampler_t"] = sampler_t;
           lst["control"] = ctrl_list;
           break;
         case OPTIM: 
@@ -409,11 +430,17 @@ namespace rstan {
           lst["iter"] = ctrl.optim.iter;
           lst["refresh"] = ctrl.optim.refresh;
           lst["save_iterations"] = ctrl.optim.save_iterations;
-          lst["stepsize"] = ctrl.optim.stepsize;
           switch (ctrl.optim.algorithm) {
             case Newton: lst["algorithm"] = "Newton"; break;
-            case Nesterov: lst["algorithm"] = "Nesterov"; break;
-            case BFGS: lst["algorithm"] = "BFGS"; break;
+            case Nesterov: lst["algorithm"] = "Nesterov"; 
+                           lst["stepsize"] = ctrl.optim.stepsize;
+                           break;
+            case BFGS: lst["algorithm"] = "BFGS"; 
+                       lst["init_alpha"] = ctrl.optim.init_alpha;
+                       lst["tol_obj"] = ctrl.optim.tol_obj;
+                       lst["tol_grad"] = ctrl.optim.tol_grad;
+                       lst["tol_param"] = ctrl.optim.tol_param;
+                       break;
           } 
           break;
         case TEST_GRADIENT:
@@ -518,8 +545,20 @@ namespace rstan {
     inline bool get_ctrl_optim_save_iterations() const {
       return ctrl.optim.save_iterations;
     }
-    inline bool get_ctrl_optim_stepsize() const { 
+    inline double get_ctrl_optim_stepsize() const { 
       return ctrl.optim.stepsize;
+    }
+    inline double get_ctrl_optim_init_alpha() const { 
+      return ctrl.optim.init_alpha;
+    }
+    inline double get_ctrl_optim_tol_obj() const { 
+      return ctrl.optim.tol_obj;
+    }
+    inline double get_ctrl_optim_tol_grad() const { 
+      return ctrl.optim.tol_grad;
+    }
+    inline double get_ctrl_optim_tol_param() const { 
+      return ctrl.optim.tol_param;
     }
     inline unsigned int get_chain_id() const {
       return chain_id;
@@ -545,7 +584,6 @@ namespace rstan {
           write_comment_property(ostream,"save_warmup",1);
           write_comment_property(ostream,"thin",ctrl.sampling.thin);
           write_comment_property(ostream,"refresh",ctrl.sampling.refresh);
-          write_comment_property(ostream,"max_treedepth",ctrl.sampling.max_treedepth);
           write_comment_property(ostream,"stepsize",ctrl.sampling.stepsize);
           write_comment_property(ostream,"stepsize_jitter",ctrl.sampling.stepsize_jitter);
           write_comment_property(ostream,"adapt_engaged",ctrl.sampling.adapt_engaged);
@@ -555,25 +593,34 @@ namespace rstan {
           write_comment_property(ostream,"adapt_t0",ctrl.sampling.adapt_t0);
           switch (ctrl.sampling.algorithm) {
             case NUTS: 
+              write_comment_property(ostream,"max_treedepth",ctrl.sampling.max_treedepth);
               switch (ctrl.sampling.metric) {
                 case UNIT_E: write_comment_property(ostream,"sampler_t","NUTS(unit_e)"); break;
                 case DIAG_E: write_comment_property(ostream,"sampler_t","NUTS(diag_e)"); break;
                 case DENSE_E: write_comment_property(ostream,"sampler_t","NUTS(dense_e)"); break;
               } 
               break;
-            case HMC: write_comment_property(ostream,"sampler_t", "HMC"); break;
+            case HMC: write_comment_property(ostream,"sampler_t", "HMC");
+                      write_comment_property(ostream,"int_time", ctrl.sampling.int_time); 
+                      break;
             case Metropolis: write_comment_property(ostream,"sampler_t", "Metropolis"); break;
           } 
           break;
 
         case OPTIM: 
           write_comment_property(ostream,"refresh",ctrl.optim.refresh);
-          write_comment_property(ostream,"stepsize",ctrl.optim.stepsize);
           write_comment_property(ostream,"save_iterations",ctrl.optim.save_iterations);
           switch (ctrl.optim.algorithm) {
             case Newton: write_comment_property(ostream,"algorithm", "Newton"); break;
-            case Nesterov: write_comment_property(ostream,"algorithm", "Nesterov"); break;
-            case BFGS: write_comment_property(ostream,"algorithm", "BFGS"); break;
+            case Nesterov: write_comment_property(ostream,"algorithm", "Nesterov");
+                           write_comment_property(ostream,"stepsize", ctrl.optim.stepsize);
+                           break;
+            case BFGS: write_comment_property(ostream,"algorithm", "BFGS");
+                       write_comment_property(ostream,"init_alpha", ctrl.optim.init_alpha);
+                       write_comment_property(ostream,"tol_obj", ctrl.optim.tol_obj);
+                       write_comment_property(ostream,"tol_grad", ctrl.optim.tol_grad);
+                       write_comment_property(ostream,"tol_param", ctrl.optim.tol_param);
+                       break;
           } 
         case TEST_GRADIENT: break;
       } 

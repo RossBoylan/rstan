@@ -65,6 +65,7 @@ help:
 	@echo ' clean: to remove the gzip package file'
 	@echo ' check: use R CMD check on rstan package'
 	@echo ' tmpstanlib: use Boost bcp to strip boost'
+	@echo ' example_csv: create CSV files included in the package for examples'
 	@echo '--------------------------------------------------------------------------------'
 
 build $(STANPKG): ./rstan/DESCRIPTION 
@@ -87,6 +88,7 @@ endif
 	# --resave-data="best" to work around https://bugs.r-project.org/bugzilla3/show_bug.cgi?id=14947
 	# --no-resave-data because data refers to rstan library, which is yet to be built
 	$(R) CMD build rstan --md5 --no-resave-data # --no-vignettes --no-manual
+
 
 example_csv : 
 ifneq ($(OS), win)
