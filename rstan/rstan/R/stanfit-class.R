@@ -378,9 +378,8 @@ setMethod("extract", signature = "stanfit",
 
             n_kept <- object@sim$n_save - object@sim$warmup2
             fun1 <- function(par) {
-              sss <- sapply(tidx[[par]], get_kept_samples2, object@sim) 
-              if (is.list(sss))  sss <- do.call(c, sss)
-              dim(sss) <- c(sum(n_kept), object@sim$dims_oi[[par]]) 
+              sss <- lapply(tidx[[par]], get_kept_samples2, object@sim) 
+              sss <- do.call(cbind, sss)
               dimnames(sss) <- list(iterations = NULL)
               sss 
             } 
